@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -62,6 +63,20 @@ def main(page: ft.Page):
 
     _streaming: dict[str, tuple[ft.Text, ft.Column] | None] = {}
 
+    def _do_page_update():
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def _trigger_update():
+        """Run page.update() outside the asyncio event loop so Flutter renders immediately."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _do_page_update)
+        except RuntimeError:
+            _do_page_update()
+
     def _append_bubble(role: str, text: str) -> tuple[ft.Text, ft.Column]:
         is_user = role == "user"
         text_widget = ft.Text(text, size=13, color=ft.Colors.WHITE, selectable=True)
@@ -100,10 +115,7 @@ def main(page: ft.Page):
         def toggle(e):
             thinking_box.visible = not thinking_box.visible
             btn.text = "▼ thinking" if thinking_box.visible else "▶ thinking"
-            try:
-                page.update()
-            except Exception:
-                pass
+            _trigger_update()
 
         btn = ft.TextButton(
             "▶ thinking",
@@ -118,10 +130,7 @@ def main(page: ft.Page):
             _streaming[role] = (tw, col)
         else:
             _streaming[role][0].value = text_so_far
-        try:
-            page.update()
-        except Exception:
-            pass
+        _trigger_update()
 
     def add_message(role: str, text: str, thinking: str = ""):
         if _streaming.get(role) is not None:
@@ -132,10 +141,7 @@ def main(page: ft.Page):
             tw, col = _append_bubble(role, text)
         if thinking and role == "assistant":
             _add_thinking_toggle(col, thinking)
-        try:
-            page.update()
-        except Exception:
-            pass
+        _trigger_update()
 
     # ── Status / button callbacks ────────────────────────────────────────────
 
@@ -178,7 +184,7 @@ def main(page: ft.Page):
             mic_button.animate_opacity = None
             mic_level.visible = False
             mic_level.value = 0
-        page.update()
+        _trigger_update()
 
     def start_listening(e):
         log.info("Tap down — starting recording")
@@ -201,10 +207,7 @@ def main(page: ft.Page):
             time.sleep(0.1)
             if mic_level.visible:
                 mic_level.value = _current_level[0]
-                try:
-                    page.update()
-                except Exception:
-                    pass
+                _trigger_update()
 
     threading.Thread(target=_level_poll_thread, daemon=True).start()
 
