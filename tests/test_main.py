@@ -48,11 +48,13 @@ def app(request):
 
     with patch("main.threading.Thread", side_effect=_fake_thread):
         with patch.object(audio_loop, "set_message_callback") as mock_smc:
-            with patch.object(audio_loop, "start_session") as mock_ss:
-                with patch.object(audio_loop, "play_mp3_background"):
-                    _main.main(page)
+            with patch.object(audio_loop, "set_chunk_callback") as mock_scc:
+                with patch.object(audio_loop, "start_session") as mock_ss:
+                    with patch.object(audio_loop, "play_mp3_background"):
+                        _main.main(page)
 
     captured["add_message"] = mock_smc.call_args[0][0]
+    captured["on_chunk"] = mock_scc.call_args[0][0]
     captured["on_status"] = mock_ss.call_args[0][0]
     captured["on_tap_down"] = gesture_kw.get("on_tap_down")
     captured["on_tap_up"] = gesture_kw.get("on_tap_up")
@@ -88,6 +90,26 @@ def test_on_status_processing(app):
     app["page"].update.assert_called()
 
 
+# ── on_chunk ──────────────────────────────────────────────────────────────────
+
+def test_on_chunk_creates_bubble_on_first_call(app):
+    app["page"].update.reset_mock()
+    app["on_chunk"]("assistant", "Bon")
+    app["page"].update.assert_called()
+
+
+def test_on_chunk_updates_existing_bubble(app):
+    app["on_chunk"]("assistant", "Bon")
+    app["page"].update.reset_mock()
+    app["on_chunk"]("assistant", "Bonjour")
+    app["page"].update.assert_called()
+
+
+def test_on_chunk_exception_is_silenced(app):
+    app["page"].update.side_effect = Exception("page closed")
+    app["on_chunk"]("assistant", "hi")  # must not raise
+
+
 # ── add_message ───────────────────────────────────────────────────────────────
 
 def test_add_message_user_bubble(app):
@@ -99,6 +121,13 @@ def test_add_message_user_bubble(app):
 def test_add_message_assistant_bubble(app):
     app["page"].update.reset_mock()
     app["add_message"]("assistant", "bonjour")
+    app["page"].update.assert_called()
+
+
+def test_add_message_finalizes_streaming_bubble(app):
+    app["on_chunk"]("assistant", "Bon")
+    app["page"].update.reset_mock()
+    app["add_message"]("assistant", "Bonjour")
     app["page"].update.assert_called()
 
 

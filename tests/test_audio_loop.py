@@ -74,12 +74,18 @@ def _live_ctx(session):
     return _ctx
 
 
-# ── set_message_callback ─────────────────────────────────────────────────────
+# ── set_message_callback / set_chunk_callback ────────────────────────────────
 
 def test_set_message_callback_stores_callable():
     cb = MagicMock()
     audio_loop.set_message_callback(cb)
     assert audio_loop._on_message is cb
+
+
+def test_set_chunk_callback_stores_callable():
+    cb = MagicMock()
+    audio_loop.set_chunk_callback(cb)
+    assert audio_loop._on_chunk is cb
 
 
 # ── _add_message ─────────────────────────────────────────────────────────────
@@ -228,6 +234,27 @@ async def test_collect_response_output_transcription_added_to_history():
 
     assert any(h["role"] == "assistant" and "Bonjour" in h["text"]
                for h in audio_loop._history)
+
+
+async def test_collect_response_output_transcription_calls_chunk_callback():
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    sc1 = make_sc(output_transcription=SimpleNamespace(text="Bon"))
+    sc2 = make_sc(output_transcription=SimpleNamespace(text="jour"), turn_complete=True)
+
+    with patch("audio_loop.threading.Thread"):
+        await audio_loop._collect_response(make_session([make_msg(sc1), make_msg(sc2)]),
+                                            lambda s: None)
+
+    assert chunks == [("assistant", "Bon"), ("assistant", "Bonjour")]
+
+
+async def test_collect_response_input_transcription_calls_chunk_callback():
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    sc = make_sc(input_transcription=SimpleNamespace(text="Oui"), turn_complete=True)
+    await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
+    assert ("user", "Oui") in chunks
 
 
 async def test_collect_response_input_transcription_added_to_history():

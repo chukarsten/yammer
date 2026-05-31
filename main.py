@@ -60,31 +60,45 @@ def main(page: ft.Page):
         padding=ft.Padding(left=12, right=12, top=8, bottom=8),
     )
 
-    def add_message(role: str, text: str):
+    _streaming: dict[str, ft.Text | None] = {}
+
+    def _append_bubble(role: str, text: str) -> ft.Text:
         is_user = role == "user"
+        text_widget = ft.Text(text, size=13, color=ft.Colors.WHITE, selectable=True)
         bubble = ft.Container(
-            content=ft.Text(text, size=13, color=ft.Colors.WHITE, selectable=True),
+            content=text_widget,
             bgcolor=ft.Colors.BLUE_700 if is_user else "#2d4a2d",
             border_radius=12,
             padding=ft.Padding(left=12, right=12, top=8, bottom=8),
             width=280,
         )
-        label = ft.Text(
-            "You" if is_user else "Yammer",
-            size=11,
-            color=ft.Colors.GREY_500,
-        )
+        label = ft.Text("You" if is_user else "Yammer", size=11, color=ft.Colors.GREY_500)
         col = ft.Column(
             [label, bubble],
             spacing=2,
             horizontal_alignment=ft.CrossAxisAlignment.END if is_user else ft.CrossAxisAlignment.START,
         )
         chat_list.controls.append(
-            ft.Row(
-                [col],
-                alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START,
-            )
+            ft.Row([col], alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START)
         )
+        return text_widget
+
+    def on_chunk(role: str, text_so_far: str):
+        if _streaming.get(role) is None:
+            _streaming[role] = _append_bubble(role, text_so_far)
+        else:
+            _streaming[role].value = text_so_far
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def add_message(role: str, text: str):
+        if _streaming.get(role) is not None:
+            _streaming[role].value = text
+            _streaming[role] = None
+        else:
+            _append_bubble(role, text)
         try:
             page.update()
         except Exception:
@@ -215,6 +229,7 @@ def main(page: ft.Page):
 
     log.info("UI ready — starting background music and session")
     audio_loop.set_message_callback(add_message)
+    audio_loop.set_chunk_callback(on_chunk)
     audio_loop.play_mp3_background(r"C:\Users\karst\Downloads\happy-day-paris.mp3", volume=0.2)
     audio_loop.start_session(on_status)
 

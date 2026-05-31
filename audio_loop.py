@@ -66,6 +66,7 @@ CONFIG = types.LiveConnectConfig(**_base_config)
 # Conversation history: [{"role": "user"|"assistant", "text": str}]
 _history: list[dict] = []
 _on_message: Callable | None = None
+_on_chunk: Callable | None = None
 
 _recording = threading.Event()
 _outgoing: asyncio.Queue | None = None
@@ -76,6 +77,11 @@ _END = object()
 def set_message_callback(cb: Callable):
     global _on_message
     _on_message = cb
+
+
+def set_chunk_callback(cb: Callable):
+    global _on_chunk
+    _on_chunk = cb
 
 
 def _add_message(role: str, text: str):
@@ -158,11 +164,15 @@ async def _collect_response(session, on_status: Callable):
             if out_t and getattr(out_t, "text", None):
                 asst_transcript.append(out_t.text)
                 log.debug("Asst transcript chunk: %s", out_t.text)
+                if _on_chunk:
+                    _on_chunk("assistant", "".join(asst_transcript))
 
             in_t = getattr(sc, "input_transcription", None)
             if in_t and getattr(in_t, "text", None):
                 user_transcript.append(in_t.text)
                 log.debug("User transcript chunk: %s", in_t.text)
+                if _on_chunk:
+                    _on_chunk("user", "".join(user_transcript))
 
             if sc.turn_complete:
                 log.info("Turn complete")
