@@ -29,7 +29,7 @@ _client = genai.Client(
     http_options={"api_version": "v1alpha"},
 )
 _translate_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-_TRANSLATE_MODEL = "gemini-2.0-flash"
+_TRANSLATE_MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """\
 You are a French language tutor named Yammer. You are speaking with a beginner English speaker \

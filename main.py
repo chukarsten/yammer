@@ -63,19 +63,34 @@ def main(page: ft.Page):
 
     _streaming: dict[str, tuple[ft.Text, ft.Column] | None] = {}
 
-    def _do_page_update():
-        try:
-            page.update()
-        except Exception:
-            pass
+    _update_needed = threading.Event()
+
+    def _ui_update_thread():
+        import time
+        while True:
+            _update_needed.wait()
+            _update_needed.clear()
+            try:
+                page.update()
+            except Exception:
+                pass
+            time.sleep(0.033)  # max ~30 fps
+
+    threading.Thread(target=_ui_update_thread, daemon=True).start()
 
     def _trigger_update():
-        """Run page.update() outside the asyncio event loop so Flutter renders immediately."""
         try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _do_page_update)
+            asyncio.get_running_loop()
+            # Called from the audio asyncio thread — signal the background render thread
+            # instead of blocking the event loop with a direct page.update() call.
+            _update_needed.set()
         except RuntimeError:
-            _do_page_update()
+            # Called from a plain thread (Flet event handlers, playback worker, tests).
+            # Update immediately — this is the path that reliably triggers Flutter rendering.
+            try:
+                page.update()
+            except Exception:
+                pass
 
     def _append_bubble(role: str, text: str) -> tuple[ft.Text, ft.Column]:
         is_user = role == "user"
