@@ -136,6 +136,25 @@ def test_add_message_page_update_exception_is_silenced(app):
     app["add_message"]("user", "hi")  # must not raise
 
 
+def test_add_message_with_thinking_does_not_raise(app):
+    app["add_message"]("assistant", "Bonjour", "**Planning lesson**")
+    app["page"].update.assert_called()
+
+
+def test_on_status_speaking_creates_placeholder_bubble(app):
+    app["page"].update.reset_mock()
+    app["on_status"]("speaking")
+    app["page"].update.assert_called()
+
+
+def test_on_chunk_after_speaking_updates_existing_bubble(app):
+    app["on_status"]("speaking")
+    app["page"].update.reset_mock()
+    # on_chunk must not create a second bubble — it updates the existing one
+    app["on_chunk"]("assistant", "Bonjour")
+    app["page"].update.assert_called()
+
+
 # ── start_listening / stop_listening ─────────────────────────────────────────
 
 def test_start_listening_spawns_thread(app):

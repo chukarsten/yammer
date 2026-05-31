@@ -60,9 +60,9 @@ def main(page: ft.Page):
         padding=ft.Padding(left=12, right=12, top=8, bottom=8),
     )
 
-    _streaming: dict[str, ft.Text | None] = {}
+    _streaming: dict[str, tuple[ft.Text, ft.Column] | None] = {}
 
-    def _append_bubble(role: str, text: str) -> ft.Text:
+    def _append_bubble(role: str, text: str) -> tuple[ft.Text, ft.Column]:
         is_user = role == "user"
         text_widget = ft.Text(text, size=13, color=ft.Colors.WHITE, selectable=True)
         bubble = ft.Container(
@@ -81,24 +81,53 @@ def main(page: ft.Page):
         chat_list.controls.append(
             ft.Row([col], alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START)
         )
-        return text_widget
+        return text_widget, col
+
+    def _add_thinking_toggle(col: ft.Column, thinking: str):
+        thinking_text = ft.Text(
+            thinking,
+            size=11,
+            color=ft.Colors.GREY_400,
+            italic=True,
+            visible=False,
+            selectable=True,
+        )
+
+        def toggle(e):
+            thinking_text.visible = not thinking_text.visible
+            btn.text = "▼ thinking" if thinking_text.visible else "▶ thinking"
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        btn = ft.TextButton(
+            "▶ thinking",
+            on_click=toggle,
+            style=ft.ButtonStyle(color=ft.Colors.GREY_500),
+        )
+        col.controls.extend([btn, thinking_text])
 
     def on_chunk(role: str, text_so_far: str):
         if _streaming.get(role) is None:
-            _streaming[role] = _append_bubble(role, text_so_far)
+            tw, col = _append_bubble(role, text_so_far)
+            _streaming[role] = (tw, col)
         else:
-            _streaming[role].value = text_so_far
+            _streaming[role][0].value = text_so_far
         try:
             page.update()
         except Exception:
             pass
 
-    def add_message(role: str, text: str):
+    def add_message(role: str, text: str, thinking: str = ""):
         if _streaming.get(role) is not None:
-            _streaming[role].value = text
+            tw, col = _streaming[role]
+            tw.value = text
             _streaming[role] = None
         else:
-            _append_bubble(role, text)
+            tw, col = _append_bubble(role, text)
+        if thinking and role == "assistant":
+            _add_thinking_toggle(col, thinking)
         try:
             page.update()
         except Exception:
@@ -125,6 +154,9 @@ def main(page: ft.Page):
             mic_button.opacity = 0.4
             mic_button.bgcolor = ft.Colors.BLUE
             mic_button.animate_opacity = None
+            if _streaming.get("assistant") is None:
+                tw, col = _append_bubble("assistant", "…")
+                _streaming["assistant"] = (tw, col)
         elif state == "listening":
             status.value = "Listening..."
             mic_button.bgcolor = ft.Colors.RED

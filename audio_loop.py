@@ -84,14 +84,14 @@ def set_chunk_callback(cb: Callable):
     _on_chunk = cb
 
 
-def _add_message(role: str, text: str):
+def _add_message(role: str, text: str, thinking: str = ""):
     text = text.strip()
     if not text:
         return
     _history.append({"role": role, "text": text})
     log.info("History [%s]: %s", role, text)
     if _on_message:
-        _on_message(role, text)
+        _on_message(role, text, thinking)
 
 
 def play_mp3_background(path: str, volume: float = 0.2):
@@ -137,6 +137,7 @@ async def _collect_response(session, on_status: Callable):
     """Receive messages until turn_complete, playing audio and collecting transcripts."""
     playback_q: queue.Queue | None = None
     asst_transcript: list[str] = []
+    asst_thinking: list[str] = []
     user_transcript: list[str] = []
 
     async with asyncio.timeout(30):
@@ -158,11 +159,9 @@ async def _collect_response(session, on_status: Callable):
                                 args=(playback_q, on_status),
                                 daemon=True,
                             ).start()
-                            if _on_chunk:
-                                _on_chunk("assistant", "…")
                         playback_q.put(chunk)
                     if getattr(part, "text", None):
-                        # Model thinking/reasoning — log for debugging but never display
+                        asst_thinking.append(part.text)
                         log.debug("Model thinking: %s", part.text)
 
             out_t = getattr(sc, "output_transcription", None)
@@ -184,7 +183,7 @@ async def _collect_response(session, on_status: Callable):
                 if user_transcript:
                     _add_message("user", "".join(user_transcript))
                 if asst_transcript:
-                    _add_message("assistant", "".join(asst_transcript))
+                    _add_message("assistant", "".join(asst_transcript), "".join(asst_thinking))
                 if playback_q:
                     playback_q.put(_PLAYBACK_END)
                 else:

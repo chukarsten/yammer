@@ -108,7 +108,7 @@ def test_add_message_without_callback_does_not_raise():
 
 def test_add_message_invokes_callback():
     received = []
-    audio_loop._on_message = lambda role, text: received.append((role, text))
+    audio_loop._on_message = lambda role, text, thinking="": received.append((role, text))
     audio_loop._add_message("assistant", "bonjour")
     assert received == [("assistant", "bonjour")]
 
@@ -211,19 +211,6 @@ async def test_collect_response_audio_chunk_starts_playback_thread():
     mock_thread.return_value.start.assert_called_once()
 
 
-async def test_collect_response_audio_chunk_emits_placeholder_chunk():
-    chunks = []
-    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
-    chunk = b"\x01\x02" * 50
-    sc = make_sc(
-        model_turn=make_model_turn([make_part(inline_data=make_inline(chunk))]),
-        turn_complete=True,
-    )
-    with patch("audio_loop.threading.Thread"):
-        await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
-
-    assert chunks[0] == ("assistant", "…")
-
 
 async def test_collect_response_part_without_inline_data_skips_playback():
     sc = make_sc(
@@ -279,6 +266,24 @@ async def test_collect_response_thinking_text_not_shown_or_saved():
     assert not any(h["text"] == "**Thinking...**" for h in audio_loop._history)
     # But the real transcription must still appear
     assert ("assistant", "Bonjour!") in chunks
+
+
+async def test_collect_response_thinking_passed_to_message_callback():
+    """part.text (chain-of-thought) is collected and forwarded via _on_message."""
+    received = []
+    audio_loop._on_message = lambda role, text, thinking="": received.append((role, text, thinking))
+    sc = make_sc(
+        model_turn=make_model_turn([make_part(text="**Planning**")]),
+        output_transcription=SimpleNamespace(text="Bonjour!"),
+        turn_complete=True,
+    )
+    await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
+
+    assert len(received) == 1
+    role, text, thinking = received[0]
+    assert role == "assistant"
+    assert text == "Bonjour!"
+    assert "**Planning**" in thinking
 
 
 async def test_collect_response_input_transcription_calls_chunk_callback():
