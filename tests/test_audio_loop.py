@@ -211,6 +211,20 @@ async def test_collect_response_audio_chunk_starts_playback_thread():
     mock_thread.return_value.start.assert_called_once()
 
 
+async def test_collect_response_audio_chunk_emits_placeholder_chunk():
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    chunk = b"\x01\x02" * 50
+    sc = make_sc(
+        model_turn=make_model_turn([make_part(inline_data=make_inline(chunk))]),
+        turn_complete=True,
+    )
+    with patch("audio_loop.threading.Thread"):
+        await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
+
+    assert chunks[0] == ("assistant", "…")
+
+
 async def test_collect_response_part_without_inline_data_skips_playback():
     sc = make_sc(
         model_turn=make_model_turn([make_part(inline_data=None)]),

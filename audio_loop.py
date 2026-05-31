@@ -158,6 +158,8 @@ async def _collect_response(session, on_status: Callable):
                                 args=(playback_q, on_status),
                                 daemon=True,
                             ).start()
+                            if _on_chunk:
+                                _on_chunk("assistant", "…")
                         playback_q.put(chunk)
 
             out_t = getattr(sc, "output_transcription", None)
