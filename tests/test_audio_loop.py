@@ -263,50 +263,22 @@ async def test_collect_response_output_transcription_calls_chunk_callback():
     assert chunks == [("assistant", "Bon"), ("assistant", "Bonjour")]
 
 
-async def test_collect_response_inline_text_part_streams_immediately():
-    """Text in model_turn.parts arrives before audio ends — fastest path."""
+async def test_collect_response_thinking_text_not_shown_or_saved():
+    """model_turn text parts are thinking/reasoning — must not reach UI or history."""
     chunks = []
     audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
     sc = make_sc(
-        model_turn=make_model_turn([make_part(text="Bonjour!")]),
-        turn_complete=True,
-    )
-    await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
-
-    assert ("assistant", "Bonjour!") in chunks
-    assert any(h["role"] == "assistant" and h["text"] == "Bonjour!" for h in audio_loop._history)
-
-
-async def test_collect_response_inline_text_suppresses_output_transcription():
-    """When model sends inline text, output_transcription is ignored to avoid duplicates."""
-    chunks = []
-    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
-    sc = make_sc(
-        model_turn=make_model_turn([make_part(text="Bonjour!")]),
+        model_turn=make_model_turn([make_part(text="**Thinking...**")]),
         output_transcription=SimpleNamespace(text="Bonjour!"),
         turn_complete=True,
     )
     await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
 
-    assistant_chunks = [t for r, t in chunks if r == "assistant"]
-    assert assistant_chunks.count("Bonjour!") == 1
-
-
-async def test_collect_response_text_before_audio_skips_placeholder():
-    """When inline text arrives before audio, the '…' placeholder is not emitted."""
-    chunks = []
-    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
-    sc1 = make_sc(model_turn=make_model_turn([make_part(text="Hello")]))
-    sc2 = make_sc(
-        model_turn=make_model_turn([make_part(inline_data=make_inline(b"\x01" * 50))]),
-        turn_complete=True,
-    )
-    with patch("audio_loop.threading.Thread"):
-        await audio_loop._collect_response(make_session([make_msg(sc1), make_msg(sc2)]),
-                                            lambda s: None)
-
-    assert ("assistant", "…") not in chunks
-    assert ("assistant", "Hello") in chunks
+    # Thinking text must NOT appear in chunks or history
+    assert all("Thinking" not in t for _, t in chunks)
+    assert not any(h["text"] == "**Thinking...**" for h in audio_loop._history)
+    # But the real transcription must still appear
+    assert ("assistant", "Bonjour!") in chunks
 
 
 async def test_collect_response_input_transcription_calls_chunk_callback():
