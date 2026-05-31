@@ -89,7 +89,7 @@ def _add_message(role: str, text: str):
     if not text:
         return
     _history.append({"role": role, "text": text})
-    log.info("History [%s]: %.80s", role, text)
+    log.info("History [%s]: %s", role, text)
     if _on_message:
         _on_message(role, text)
 
