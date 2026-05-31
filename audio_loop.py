@@ -137,6 +137,7 @@ async def _collect_response(session, on_status: Callable):
     """Receive messages until turn_complete, playing audio and collecting transcripts."""
     playback_q: queue.Queue | None = None
     asst_transcript: list[str] = []
+    asst_has_inline_text = False   # True if model sent text parts directly (faster path)
     user_transcript: list[str] = []
 
     async with asyncio.timeout(30):
@@ -158,12 +159,19 @@ async def _collect_response(session, on_status: Callable):
                                 args=(playback_q, on_status),
                                 daemon=True,
                             ).start()
-                            if _on_chunk:
+                            if _on_chunk and not asst_has_inline_text:
                                 _on_chunk("assistant", "…")
                         playback_q.put(chunk)
+                    if getattr(part, "text", None):
+                        asst_has_inline_text = True
+                        asst_transcript.append(part.text)
+                        log.debug("Model text chunk: %s", part.text)
+                        if _on_chunk:
+                            _on_chunk("assistant", "".join(asst_transcript))
 
+            # Only fall back to output_transcription if model didn't send inline text
             out_t = getattr(sc, "output_transcription", None)
-            if out_t and getattr(out_t, "text", None):
+            if out_t and getattr(out_t, "text", None) and not asst_has_inline_text:
                 asst_transcript.append(out_t.text)
                 log.debug("Asst transcript chunk: %s", out_t.text)
                 if _on_chunk:

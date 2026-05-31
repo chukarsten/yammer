@@ -36,8 +36,8 @@ def make_model_turn(parts):
     return SimpleNamespace(parts=parts)
 
 
-def make_part(inline_data=None):
-    return SimpleNamespace(inline_data=inline_data, text=None)
+def make_part(inline_data=None, text=None):
+    return SimpleNamespace(inline_data=inline_data, text=text)
 
 
 def make_inline(data: bytes):
@@ -261,6 +261,52 @@ async def test_collect_response_output_transcription_calls_chunk_callback():
                                             lambda s: None)
 
     assert chunks == [("assistant", "Bon"), ("assistant", "Bonjour")]
+
+
+async def test_collect_response_inline_text_part_streams_immediately():
+    """Text in model_turn.parts arrives before audio ends — fastest path."""
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    sc = make_sc(
+        model_turn=make_model_turn([make_part(text="Bonjour!")]),
+        turn_complete=True,
+    )
+    await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
+
+    assert ("assistant", "Bonjour!") in chunks
+    assert any(h["role"] == "assistant" and h["text"] == "Bonjour!" for h in audio_loop._history)
+
+
+async def test_collect_response_inline_text_suppresses_output_transcription():
+    """When model sends inline text, output_transcription is ignored to avoid duplicates."""
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    sc = make_sc(
+        model_turn=make_model_turn([make_part(text="Bonjour!")]),
+        output_transcription=SimpleNamespace(text="Bonjour!"),
+        turn_complete=True,
+    )
+    await audio_loop._collect_response(make_session([make_msg(sc)]), lambda s: None)
+
+    assistant_chunks = [t for r, t in chunks if r == "assistant"]
+    assert assistant_chunks.count("Bonjour!") == 1
+
+
+async def test_collect_response_text_before_audio_skips_placeholder():
+    """When inline text arrives before audio, the '…' placeholder is not emitted."""
+    chunks = []
+    audio_loop._on_chunk = lambda role, text: chunks.append((role, text))
+    sc1 = make_sc(model_turn=make_model_turn([make_part(text="Hello")]))
+    sc2 = make_sc(
+        model_turn=make_model_turn([make_part(inline_data=make_inline(b"\x01" * 50))]),
+        turn_complete=True,
+    )
+    with patch("audio_loop.threading.Thread"):
+        await audio_loop._collect_response(make_session([make_msg(sc1), make_msg(sc2)]),
+                                            lambda s: None)
+
+    assert ("assistant", "…") not in chunks
+    assert ("assistant", "Hello") in chunks
 
 
 async def test_collect_response_input_transcription_calls_chunk_callback():
