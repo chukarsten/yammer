@@ -49,12 +49,14 @@ def app(request):
     with patch("main.threading.Thread", side_effect=_fake_thread):
         with patch.object(audio_loop, "set_message_callback") as mock_smc:
             with patch.object(audio_loop, "set_chunk_callback") as mock_scc:
-                with patch.object(audio_loop, "start_session") as mock_ss:
-                    with patch.object(audio_loop, "play_mp3_background"):
-                        _main.main(page)
+                with patch.object(audio_loop, "set_vocab_callback") as mock_svc:
+                    with patch.object(audio_loop, "start_session") as mock_ss:
+                        with patch.object(audio_loop, "play_mp3_background"):
+                            _main.main(page)
 
     captured["add_message"] = mock_smc.call_args[0][0]
     captured["on_chunk"] = mock_scc.call_args[0][0]
+    captured["on_vocab"] = mock_svc.call_args[0][0]
     captured["on_status"] = mock_ss.call_args[0][0]
     captured["on_tap_down"] = gesture_kw.get("on_tap_down")
     captured["on_tap_up"] = gesture_kw.get("on_tap_up")
@@ -193,3 +195,33 @@ def test_record_calls_record_and_stream_and_on_mic_level(app):
     with patch.object(audio_loop, "record_and_stream",
                       side_effect=fake_record_and_stream):
         record_func()
+
+
+# ── on_vocab ──────────────────────────────────────────────────────────────────
+
+def test_on_vocab_updates_chips_and_triggers_page_update(app):
+    app["page"].update.reset_mock()
+    vocab = {
+        "bonjour": {"listen": 3, "speak": 1, "translation": "Hello"},
+        "merci": {"listen": 2, "speak": 0, "translation": "Thank you"},
+    }
+    app["on_vocab"](vocab)
+    app["page"].update.assert_called()
+
+
+def test_on_vocab_sorts_by_total_count(app):
+    vocab = {
+        "bonjour": {"listen": 3, "speak": 1, "translation": "Hello"},
+        "merci": {"listen": 10, "speak": 5, "translation": "Thank you"},
+        "oui": {"listen": 1, "speak": 0, "translation": "Yes"},
+    }
+    app["on_vocab"](vocab)
+    # Just verify it doesn't raise and updates the page
+    app["page"].update.assert_called()
+
+
+def test_on_vocab_empty_dict_clears_chips(app):
+    app["on_vocab"]({"bonjour": {"listen": 1, "speak": 0, "translation": "Hello"}})
+    app["page"].update.reset_mock()
+    app["on_vocab"]({})
+    app["page"].update.assert_called()

@@ -222,6 +222,39 @@ def main(page: ft.Page):
         on_tap_up=stop_listening,
     )
 
+    # ── Vocabulary ───────────────────────────────────────────────────────────
+
+    vocab_chips = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+
+    def on_vocab(vocab: dict):
+        sorted_words = sorted(
+            vocab.items(),
+            key=lambda kv: kv[1]["listen"] + kv[1]["speak"],
+            reverse=True,
+        )
+        vocab_chips.controls.clear()
+        for word, data in sorted_words[:25]:
+            translation = data.get("translation") or "…"
+            listen = data["listen"]
+            speak = data["speak"]
+            vocab_chips.controls.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text(word, size=11, color=ft.Colors.WHITE, expand=True),
+                            ft.Text(f"L:{listen}", size=10, color=ft.Colors.TEAL_200),
+                            ft.Text(f"S:{speak}", size=10, color=ft.Colors.ORANGE_200),
+                        ],
+                        spacing=4,
+                    ),
+                    tooltip=translation,
+                    bgcolor="#1e2e1e",
+                    border_radius=6,
+                    padding=ft.Padding(left=8, right=8, top=4, bottom=4),
+                )
+            )
+        _trigger_update()
+
     # ── Layout ───────────────────────────────────────────────────────────────
 
     left_panel = ft.Container(
@@ -229,19 +262,24 @@ def main(page: ft.Page):
             [
                 ft.Text("Yammer", size=32, weight=ft.FontWeight.BOLD),
                 ft.Text("French Language Tutor", size=14, color=ft.Colors.GREY_600),
-                ft.Divider(height=40, color=ft.Colors.TRANSPARENT),
-                mic_gesture,
                 ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                mic_gesture,
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
                 status,
                 mic_level,
                 hint,
+                ft.Divider(height=1, color=ft.Colors.GREY_800),
+                ft.Text("Vocabulary", size=11, color=ft.Colors.GREY_500),
+                vocab_chips,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=10,
+            alignment=ft.MainAxisAlignment.START,
+            spacing=8,
+            expand=True,
         ),
         width=300,
-        padding=ft.Padding(left=24, right=24, top=24, bottom=24),
+        padding=ft.Padding(left=16, right=16, top=24, bottom=16),
+        expand=True,
     )
 
     right_panel = ft.Container(
@@ -272,6 +310,7 @@ def main(page: ft.Page):
     log.info("UI ready — starting background music and session")
     audio_loop.set_message_callback(add_message)
     audio_loop.set_chunk_callback(on_chunk)
+    audio_loop.set_vocab_callback(on_vocab)
     audio_loop.play_mp3_background(r"C:\Users\karst\Downloads\happy-day-paris.mp3", volume=0.2)
     audio_loop.start_session(on_status)
 

@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import os
 import queue
+import re
 import threading
 from typing import Callable
 
@@ -26,6 +28,7 @@ _client = genai.Client(
     api_key=os.environ["GEMINI_API_KEY"],
     http_options={"api_version": "v1alpha"},
 )
+_translate_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 SYSTEM_PROMPT = """\
 You are a French language tutor named Yammer. You are speaking with a beginner English speaker \
@@ -68,6 +71,10 @@ _history: list[dict] = []
 _on_message: Callable | None = None
 _on_chunk: Callable | None = None
 
+# Vocabulary: word -> {"listen": int, "speak": int, "translation": str|None}
+_vocab: dict[str, dict] = {}
+_on_vocab: Callable | None = None
+
 _recording = threading.Event()
 _outgoing: asyncio.Queue | None = None
 _loop: asyncio.AbstractEventLoop | None = None
@@ -84,12 +91,64 @@ def set_chunk_callback(cb: Callable):
     _on_chunk = cb
 
 
+def set_vocab_callback(cb: Callable):
+    global _on_vocab
+    _on_vocab = cb
+
+
+def _extract_words(text: str) -> list[str]:
+    text = re.sub(r'\(.*?\)', '', text)  # drop (pause) etc.
+    tokens = re.findall(r"[a-zA-ZÀ-ÿ]+(?:'[a-zA-ZÀ-ÿ]+)?", text)
+    return [t.lower() for t in tokens if len(t) >= 2]
+
+
+def _translate_bg(words: list[str]):
+    """Background-thread Gemini call to translate a batch of new French words."""
+    try:
+        prompt = (
+            "Translate these French words/phrases to English. "
+            "Reply ONLY with a JSON object mapping each French word to its English translation. "
+            f"Words: {json.dumps(words)}"
+        )
+        response = _translate_client.models.generate_content(
+            model="gemini-2.0-flash-lite",
+            contents=prompt,
+        )
+        raw = response.text.strip()
+        raw = re.sub(r"```[a-z]*\n?", "", raw).strip().rstrip("`")
+        translations: dict = json.loads(raw)
+        for fr, en in translations.items():
+            fr_key = fr.lower()
+            if fr_key in _vocab:
+                _vocab[fr_key]["translation"] = en
+        log.debug("Translated %d words", len(translations))
+        if _on_vocab:
+            _on_vocab(dict(_vocab))
+    except Exception as e:
+        log.warning("Translation failed: %s", e)
+
+
+def _update_vocab(role: str, text: str):
+    key = "listen" if role == "assistant" else "speak"
+    new_words = []
+    for w in _extract_words(text):
+        if w not in _vocab:
+            _vocab[w] = {"listen": 0, "speak": 0, "translation": None}
+            new_words.append(w)
+        _vocab[w][key] += 1
+    if new_words:
+        threading.Thread(target=_translate_bg, args=(new_words,), daemon=True).start()
+    if _on_vocab:
+        _on_vocab(dict(_vocab))
+
+
 def _add_message(role: str, text: str, thinking: str = ""):
     text = text.strip()
     if not text:
         return
     _history.append({"role": role, "text": text})
     log.info("History [%s]: %s", role, text)
+    _update_vocab(role, text)
     if _on_message:
         _on_message(role, text, thinking)
 

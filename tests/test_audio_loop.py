@@ -507,3 +507,85 @@ def test_record_and_stream_warns_when_loop_is_none():
         audio_loop._outgoing = asyncio.Queue()
         audio_loop._loop = None
         audio_loop.record_and_stream()  # should not raise; takes the warning branch
+
+
+# ── _extract_words ────────────────────────────────────────────────────────────
+
+def test_extract_words_basic():
+    words = audio_loop._extract_words("Bonjour! Comment ça va?")
+    assert "bonjour" in words
+    assert "comment" in words
+    assert "va" in words
+
+
+def test_extract_words_strips_parenthetical():
+    words = audio_loop._extract_words("Répétez (pause) s'il vous plaît")
+    assert "pause" not in words
+    assert "répétez" in words
+
+
+def test_extract_words_handles_apostrophe():
+    words = audio_loop._extract_words("c'est l'heure")
+    assert "c'est" in words or "est" in words
+    assert "l'heure" in words or "heure" in words
+
+
+def test_extract_words_skips_single_char():
+    words = audio_loop._extract_words("À la maison")
+    for w in words:
+        assert len(w) >= 2
+
+
+# ── _update_vocab ─────────────────────────────────────────────────────────────
+
+def test_update_vocab_listen_increments_for_assistant():
+    with patch("audio_loop.threading.Thread"):
+        audio_loop._update_vocab("assistant", "Bonjour tout le monde")
+    assert audio_loop._vocab["bonjour"]["listen"] == 1
+    assert audio_loop._vocab["bonjour"]["speak"] == 0
+
+
+def test_update_vocab_speak_increments_for_user():
+    with patch("audio_loop.threading.Thread"):
+        audio_loop._update_vocab("user", "Bonjour madame")
+    assert audio_loop._vocab["bonjour"]["speak"] == 1
+    assert audio_loop._vocab["bonjour"]["listen"] == 0
+
+
+def test_update_vocab_invokes_on_vocab_callback():
+    received = []
+    audio_loop._on_vocab = lambda v: received.append(dict(v))
+    with patch("audio_loop.threading.Thread"):
+        audio_loop._update_vocab("assistant", "Bonjour")
+    assert len(received) >= 1
+    assert "bonjour" in received[-1]
+
+
+def test_update_vocab_spawns_translate_thread_for_new_words():
+    with patch("audio_loop.threading.Thread") as mock_t:
+        audio_loop._update_vocab("assistant", "Bonjour")
+    mock_t.assert_called_once()
+    assert mock_t.call_args.kwargs.get("daemon") is True
+
+
+def test_update_vocab_no_new_thread_for_known_words():
+    audio_loop._vocab["bonjour"] = {"listen": 1, "speak": 0, "translation": "Hello"}
+    with patch("audio_loop.threading.Thread") as mock_t:
+        audio_loop._update_vocab("assistant", "Bonjour")
+    mock_t.assert_not_called()
+
+
+# ── set_vocab_callback ────────────────────────────────────────────────────────
+
+def test_set_vocab_callback_stores_callable():
+    cb = MagicMock()
+    audio_loop.set_vocab_callback(cb)
+    assert audio_loop._on_vocab is cb
+
+
+# ── _add_message triggers vocab update ───────────────────────────────────────
+
+def test_add_message_triggers_vocab_update():
+    with patch("audio_loop.threading.Thread"):
+        audio_loop._add_message("assistant", "Bonjour")
+    assert "bonjour" in audio_loop._vocab
