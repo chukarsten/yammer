@@ -89,13 +89,17 @@ def main(page: ft.Page):
             size=11,
             color=ft.Colors.GREY_400,
             italic=True,
-            visible=False,
             selectable=True,
+        )
+        thinking_box = ft.Container(
+            content=thinking_text,
+            width=280,
+            visible=False,
         )
 
         def toggle(e):
-            thinking_text.visible = not thinking_text.visible
-            btn.text = "▼ thinking" if thinking_text.visible else "▶ thinking"
+            thinking_box.visible = not thinking_box.visible
+            btn.text = "▼ thinking" if thinking_box.visible else "▶ thinking"
             try:
                 page.update()
             except Exception:
@@ -106,7 +110,7 @@ def main(page: ft.Page):
             on_click=toggle,
             style=ft.ButtonStyle(color=ft.Colors.GREY_500),
         )
-        col.controls.extend([btn, thinking_text])
+        col.controls.extend([btn, thinking_box])
 
     def on_chunk(role: str, text_so_far: str):
         if _streaming.get(role) is None:
@@ -142,6 +146,9 @@ def main(page: ft.Page):
             mic_button.disabled = True
             mic_button.opacity = 0.4
             mic_button.bgcolor = ft.Colors.BLUE
+            # Clear stale streaming state so reconnects don't update old bubbles
+            _streaming["user"] = None
+            _streaming["assistant"] = None
         elif state == "ready":
             status.value = "Press and hold to speak"
             mic_button.disabled = False
