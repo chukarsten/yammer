@@ -29,6 +29,7 @@ _client = genai.Client(
     http_options={"api_version": "v1alpha"},
 )
 _translate_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+_TRANSLATE_MODEL = "gemini-2.0-flash"
 
 SYSTEM_PROMPT = """\
 You are a French language tutor named Yammer. You are speaking with a beginner English speaker \
@@ -111,7 +112,7 @@ def _translate_bg(words: list[str]):
             f"Words: {json.dumps(words)}"
         )
         response = _translate_client.models.generate_content(
-            model="gemini-2.0-flash-lite",
+            model=_TRANSLATE_MODEL,
             contents=prompt,
         )
         raw = response.text.strip()
@@ -129,15 +130,23 @@ def _translate_bg(words: list[str]):
 
 
 def _update_vocab(role: str, text: str):
-    key = "listen" if role == "assistant" else "speak"
-    new_words = []
-    for w in _extract_words(text):
-        if w not in _vocab:
-            _vocab[w] = {"listen": 0, "speak": 0, "translation": None}
-            new_words.append(w)
-        _vocab[w][key] += 1
-    if new_words:
-        threading.Thread(target=_translate_bg, args=(new_words,), daemon=True).start()
+    if role == "assistant":
+        # Skip the first turn (English greeting). From turn 2 on, Yammer speaks French.
+        if len(_history) <= 1:
+            return
+        new_words = []
+        for w in _extract_words(text):
+            if w not in _vocab:
+                _vocab[w] = {"listen": 0, "speak": 0, "translation": None}
+                new_words.append(w)
+            _vocab[w]["listen"] += 1
+        if new_words:
+            threading.Thread(target=_translate_bg, args=(new_words,), daemon=True).start()
+    else:
+        # For user turns, only credit words Yammer has already introduced (French words).
+        for w in _extract_words(text):
+            if w in _vocab:
+                _vocab[w]["speak"] += 1
     if _on_vocab:
         _on_vocab(dict(_vocab))
 
@@ -260,8 +269,28 @@ async def _session_main(on_status: Callable):
         try:
             log.info("Connecting to Gemini Live...")
             on_status("connecting")
+
+            # On reconnect inject history into system_instruction so Yammer has context
+            # but doesn't speak unprompted — just wait for the student's next audio.
+            if not is_first and _history:
+                history_lines = "\n".join(
+                    f"Yammer: {t['text']}" if t["role"] == "assistant" else f"Student: {t['text']}"
+                    for t in _history[-30:]
+                )
+                live_config = types.LiveConnectConfig(**{
+                    **_base_config,
+                    "system_instruction": (
+                        SYSTEM_PROMPT
+                        + f"\n\nCONVERSATION SO FAR:\n{history_lines}\n\n"
+                        "The session was briefly interrupted. Continue the lesson naturally "
+                        "when the student speaks next."
+                    ),
+                })
+            else:
+                live_config = CONFIG
+
             async with _client.aio.live.connect(
-                model="gemini-2.5-flash-native-audio-latest", config=CONFIG
+                model="gemini-2.5-flash-native-audio-latest", config=live_config
             ) as session:
                 if is_first or not _history:
                     log.info("Sending initial greeting")
@@ -270,24 +299,10 @@ async def _session_main(on_status: Callable):
                         turn_complete=True,
                     )
                     is_first = False
+                    await _collect_response(session, on_status)
                 else:
-                    history_lines = "\n".join(
-                        f"Yammer: {t['text']}" if t["role"] == "assistant" else f"Student: {t['text']}"
-                        for t in _history[-30:]
-                    )
-                    log.info("Reconnecting — injecting %d history turns", len(_history))
-                    await session.send_client_content(
-                        turns=types.Content(
-                            role="user",
-                            parts=[types.Part(text=(
-                                f"Previous conversation:\n{history_lines}\n\n"
-                                "Continue the lesson. Do not re-introduce yourself."
-                            ))],
-                        ),
-                        turn_complete=True,
-                    )
-
-                await _collect_response(session, on_status)
+                    log.info("Reconnected with %d history turns in context", len(_history))
+                    on_status("ready")
 
                 # Discard audio queued during connect/reconnect
                 drained = 0

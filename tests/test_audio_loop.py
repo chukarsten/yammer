@@ -356,10 +356,12 @@ async def test_session_main_first_connect_sends_begin():
     assert text == "begin"
 
 
-async def test_session_main_reconnect_injects_history():
+async def test_session_main_reconnect_uses_system_instruction():
+    """On reconnect, history goes into system_instruction — no second send_client_content."""
     audio_loop._history.clear()
     send_texts = []
     collect_count = [0]
+    connect_configs = []
 
     async def mock_collect(s, on_status):
         collect_count[0] += 1
@@ -372,19 +374,33 @@ async def test_session_main_reconnect_injects_history():
         side_effect=lambda **kw: send_texts.append(kw["turns"].parts[0].text)
     )
 
+    reconnected = asyncio.Event()
+
+    @asynccontextmanager
+    async def capturing_ctx(*args, **kwargs):
+        connect_configs.append(kwargs.get("config"))
+        if len(connect_configs) >= 2:
+            reconnected.set()
+        yield session
+
+    statuses = []
     with patch.object(audio_loop, "_collect_response", side_effect=mock_collect):
-        with patch.object(audio_loop._client.aio.live, "connect", new=_live_ctx(session)):
+        with patch.object(audio_loop._client.aio.live, "connect", new=capturing_ctx):
             with patch("asyncio.sleep", new=_fast_sleep):
-                task = asyncio.create_task(audio_loop._session_main(lambda s: None))
-                for _ in range(300):
-                    await _real_sleep(0)
-                    if len(send_texts) >= 2:
-                        break
+                task = asyncio.create_task(audio_loop._session_main(statuses.append))
+                await asyncio.wait_for(reconnected.wait(), timeout=3.0)
                 await audio_loop._outgoing.put(_END)
                 await asyncio.wait_for(task, timeout=3.0)
 
-    assert send_texts[0] == "begin"
-    assert "Previous conversation:" in send_texts[1]
+    # Only one send_client_content ("begin") — reconnect doesn't send a second message
+    assert send_texts == ["begin"]
+    # Reconnect config has history in system_instruction
+    assert len(connect_configs) >= 2
+    reconnect_config = connect_configs[1]
+    assert "CONVERSATION SO FAR:" in reconnect_config.system_instruction
+    assert "Bonjour!" in reconnect_config.system_instruction
+    # ready status fired on reconnect
+    assert "ready" in statuses
 
 
 async def test_session_main_drains_stale_queue_item():
@@ -539,22 +555,42 @@ def test_extract_words_skips_single_char():
 # ── _update_vocab ─────────────────────────────────────────────────────────────
 
 def test_update_vocab_listen_increments_for_assistant():
+    # Simulate being past the first turn so vocab tracking is active
+    audio_loop._history.append({"role": "assistant", "text": "greeting"})
+    audio_loop._history.append({"role": "assistant", "text": "Bonjour tout le monde"})
     with patch("audio_loop.threading.Thread"):
         audio_loop._update_vocab("assistant", "Bonjour tout le monde")
     assert audio_loop._vocab["bonjour"]["listen"] == 1
     assert audio_loop._vocab["bonjour"]["speak"] == 0
 
 
-def test_update_vocab_speak_increments_for_user():
-    with patch("audio_loop.threading.Thread"):
-        audio_loop._update_vocab("user", "Bonjour madame")
+def test_update_vocab_skips_first_assistant_turn():
+    # First assistant message (len(_history) == 1) should NOT populate vocab
+    audio_loop._history.append({"role": "assistant", "text": "Hello! I will help you"})
+    with patch("audio_loop.threading.Thread") as mock_t:
+        audio_loop._update_vocab("assistant", "Hello I will help you")
+    assert audio_loop._vocab == {}
+    mock_t.assert_not_called()
+
+
+def test_update_vocab_speak_credits_known_words_only():
+    # User gets speak credit only for words already in vocab
+    audio_loop._vocab["bonjour"] = {"listen": 1, "speak": 0, "translation": "Hello"}
+    audio_loop._update_vocab("user", "Bonjour madame")
     assert audio_loop._vocab["bonjour"]["speak"] == 1
-    assert audio_loop._vocab["bonjour"]["listen"] == 0
+    assert "madame" not in audio_loop._vocab  # new word from user not added
+
+
+def test_update_vocab_speak_ignores_unknown_words():
+    audio_loop._update_vocab("user", "hello world unknown")
+    assert audio_loop._vocab == {}
 
 
 def test_update_vocab_invokes_on_vocab_callback():
     received = []
     audio_loop._on_vocab = lambda v: received.append(dict(v))
+    audio_loop._history.append({"role": "assistant", "text": "greeting"})
+    audio_loop._history.append({"role": "assistant", "text": "Bonjour"})
     with patch("audio_loop.threading.Thread"):
         audio_loop._update_vocab("assistant", "Bonjour")
     assert len(received) >= 1
@@ -562,6 +598,8 @@ def test_update_vocab_invokes_on_vocab_callback():
 
 
 def test_update_vocab_spawns_translate_thread_for_new_words():
+    audio_loop._history.append({"role": "assistant", "text": "greeting"})
+    audio_loop._history.append({"role": "assistant", "text": "Bonjour"})
     with patch("audio_loop.threading.Thread") as mock_t:
         audio_loop._update_vocab("assistant", "Bonjour")
     mock_t.assert_called_once()
@@ -569,6 +607,8 @@ def test_update_vocab_spawns_translate_thread_for_new_words():
 
 
 def test_update_vocab_no_new_thread_for_known_words():
+    audio_loop._history.append({"role": "assistant", "text": "greeting"})
+    audio_loop._history.append({"role": "assistant", "text": "Bonjour"})
     audio_loop._vocab["bonjour"] = {"listen": 1, "speak": 0, "translation": "Hello"}
     with patch("audio_loop.threading.Thread") as mock_t:
         audio_loop._update_vocab("assistant", "Bonjour")
@@ -586,6 +626,12 @@ def test_set_vocab_callback_stores_callable():
 # ── _add_message triggers vocab update ───────────────────────────────────────
 
 def test_add_message_triggers_vocab_update():
+    # First assistant message is the English greeting — vocab stays empty
+    with patch("audio_loop.threading.Thread"):
+        audio_loop._add_message("assistant", "Hello welcome")
+    assert audio_loop._vocab == {}
+
+    # Second assistant message is French — vocab should populate
     with patch("audio_loop.threading.Thread"):
         audio_loop._add_message("assistant", "Bonjour")
     assert "bonjour" in audio_loop._vocab
