@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import threading
@@ -63,34 +62,19 @@ def main(page: ft.Page):
 
     _streaming: dict[str, tuple[ft.Text, ft.Column] | None] = {}
 
-    _update_needed = threading.Event()
-
-    def _ui_update_thread():
-        import time
-        while True:
-            _update_needed.wait()
-            _update_needed.clear()
-            try:
-                page.update()
-            except Exception:
-                pass
-            time.sleep(0.033)  # max ~30 fps
-
-    threading.Thread(target=_ui_update_thread, daemon=True, name="yammer-ui-render").start()
+    # page.update() must run inside a page.run_task() coroutine so Flet's
+    # internal _context_page ContextVar is set before the update is flushed.
+    # Calling page.update() directly from background threads (including asyncio
+    # executor threads) sends the diff but Flutter never schedules a repaint,
+    # so newly-added chat bubbles stay invisible until the next user event.
+    async def _do_page_update():
+        page.update()
 
     def _trigger_update():
         try:
-            asyncio.get_running_loop()
-            # Called from the audio asyncio thread — signal the background render thread
-            # instead of blocking the event loop with a direct page.update() call.
-            _update_needed.set()
-        except RuntimeError:
-            # Called from a plain thread (Flet event handlers, playback worker, tests).
-            # Update immediately — this is the path that reliably triggers Flutter rendering.
-            try:
-                page.update()
-            except Exception:
-                pass
+            page.run_task(_do_page_update)
+        except Exception:
+            pass
 
     def _append_bubble(role: str, text: str) -> tuple[ft.Text, ft.Column]:
         is_user = role == "user"

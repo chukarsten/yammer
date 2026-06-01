@@ -1,21 +1,18 @@
 """
 Integration tests with real threading.
 
-Unlike test_main.py (which mocks threading.Thread and calls closures from
-pytest's plain thread), these tests let _ui_update_thread run for real and
-drive callbacks from asyncio coroutines to reproduce the exact conditions of
+Drive callbacks from asyncio coroutines to reproduce the exact conditions of
 a live session.
 
-Primary regression guarded: page.update() must be called from the
-yammer-ui-render thread, not from an asyncio thread.  When it was called
-from an asyncio executor thread, Flutter would receive the patch but not
-schedule a repaint frame, so chat bubbles appeared only on the next user
-tap.
+Primary regression guarded: page.update() must be called via page.run_task(),
+not directly from background threads.  page.run_task() sets Flet's internal
+_context_page ContextVar and schedules on the Flet connection loop — the only
+path that reliably triggers Flutter repaints for structural changes like new
+chat bubbles.
 """
 
 import asyncio
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +34,11 @@ class AppHarness:
     """
     Runs main.main(page) with real threading (no Thread mock).
     Tracks every page.update() call and which thread made it.
+
+    page.run_task is wired to execute the coroutine synchronously on the
+    calling thread so that page.update() is reachable in tests without a
+    real Flet event loop.  In production, page.run_task() schedules the
+    coroutine on the Flet connection loop (different thread, correct context).
     """
 
     def __init__(self):
@@ -49,6 +51,24 @@ class AppHarness:
             self._updated.set()
 
         self.page.update.side_effect = _track_update
+
+        # Execute the async handler synchronously on the calling thread.
+        # When called from within asyncio.run() on Windows a nested
+        # ProactorEventLoop can't be started — close the coroutine to
+        # suppress the "never awaited" warning and let the test check
+        # run_task was called rather than waiting for page.update().
+        def _mock_run_task(handler, *args, **kwargs):
+            import asyncio
+            coro = handler(*args, **kwargs)
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            except Exception:
+                coro.close()
+            finally:
+                loop.close()
+
+        self.page.run_task.side_effect = _mock_run_task
 
         # mic_level.visible must start False so _level_poll_thread doesn't fire
         _ft.ProgressBar.return_value.visible = False
@@ -94,76 +114,52 @@ def app():
 
 # ── rendering-thread tests ────────────────────────────────────────────────────
 
-def test_plain_thread_calls_page_update_directly(app):
+def test_trigger_update_calls_page_run_task(app):
     """
-    _trigger_update() from a plain thread (Flet event handler / test) must
-    call page.update() synchronously on the SAME thread — no event signalling.
+    _trigger_update() must always call page.run_task() (not page.update()
+    directly).  page.run_task schedules the update on the Flet connection
+    loop, which sets _context_page before flushing — the only path that
+    reliably triggers a Flutter repaint for structural changes like new
+    chat bubbles.
     """
     app.reset()
-    caller: list[threading.Thread] = []
-    original = app.page.update.side_effect
-
-    def capturing():
-        caller.append(threading.current_thread())
-        original()
-
-    app.page.update.side_effect = capturing
+    app.page.run_task.reset_mock()
     app.on_status("ready")
 
-    assert caller, "page.update() was never called"
-    assert caller[0] is threading.current_thread(), (
-        "page.update() was not called synchronously from the calling thread"
+    app.page.run_task.assert_called(), "page.run_task() was not called"
+    assert app.wait_for_update(timeout=1.0), (
+        "page.update() was not called within 1 s after on_status()"
     )
 
 
-def test_asyncio_trigger_renders_via_ui_render_thread(app):
+def test_asyncio_trigger_calls_page_run_task(app):
     """
-    _trigger_update() from an asyncio coroutine must NOT call page.update()
-    on the asyncio thread — it must hand off to yammer-ui-render.
+    _trigger_update() from an asyncio coroutine must call page.run_task()
+    with an async function (not call page.update() directly on the asyncio
+    thread).
 
-    Regression: with run_in_executor the patch was sent but Flutter never
-    scheduled a repaint because the call came from asyncio's executor pool.
+    Regression guard: before the fix, page.update() was called via
+    run_in_executor from the asyncio thread — Flutter received the diff but
+    never scheduled a repaint, so bubbles only appeared on next tap.
+
+    We check the API contract (run_task called with async fn) rather than
+    waiting for page.update(), because running a second event loop inside
+    asyncio.run() isn't possible on Windows.
     """
-    app.reset()
-    asyncio_thread_id: list[int] = []
+    import inspect
+
+    app.page.run_task.reset_mock()
 
     async def _trigger():
-        asyncio_thread_id.append(threading.current_thread().ident)
         app.on_chunk("assistant", "Bonjour")
 
     asyncio.run(_trigger())
 
-    assert app.wait_for_update(timeout=1.0), (
-        "page.update() was not called within 1 s after asyncio on_chunk()"
+    app.page.run_task.assert_called()
+    handler = app.page.run_task.call_args[0][0]
+    assert inspect.iscoroutinefunction(handler), (
+        f"Expected async function passed to run_task, got {handler!r}"
     )
-
-    last_caller = app.update_calls[-1]
-    assert last_caller.ident != asyncio_thread_id[0], (
-        f"page.update() came from the asyncio thread '{last_caller.name}' "
-        "— Flutter will NOT repaint!"
-    )
-    assert last_caller.name == "yammer-ui-render", (
-        f"Expected yammer-ui-render thread, got '{last_caller.name}'"
-    )
-
-
-def test_rapid_asyncio_triggers_are_coalesced(app):
-    """
-    20 rapid _trigger_update() calls from asyncio should produce far fewer
-    page.update() calls (the 33 ms rate-limit coalesces them).
-    """
-    app.reset()
-
-    async def _spam():
-        for i in range(20):
-            app.on_chunk("assistant", f"word {i}")
-
-    asyncio.run(_spam())
-    time.sleep(0.2)  # let background thread settle
-
-    n = len(app.update_calls)
-    assert n < 20, f"Expected coalescing, got {n} page.update() calls for 20 triggers"
-    assert n >= 1, "Expected at least one page.update() call"
 
 
 # ── conversation-flow tests ────────────────────────────────────────────────────

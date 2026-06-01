@@ -32,7 +32,21 @@ def app(request):
     Invoke main.main(page) and return a dict of captured closures plus the
     mock page object.
     """
+    import asyncio
+
     page = MagicMock()
+
+    # Execute the async handler synchronously so page.update() is called
+    # immediately when _trigger_update() fires page.run_task(_do_page_update).
+    def _mock_run_task(handler, *args, **kwargs):
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler(*args, **kwargs))
+        finally:
+            loop.close()
+
+    page.run_task.side_effect = _mock_run_task
+
     captured = {}
     gesture_kw = {}
 
