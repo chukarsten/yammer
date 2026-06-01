@@ -12,10 +12,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ── mock flet BEFORE importing main ──────────────────────────────────────────
+# ── use the shared flet mock from conftest.py ─────────────────────────────────
+# conftest.py installs sys.modules["flet"] before any test file is imported.
+# Grabbing it here ensures all test files configure the SAME MagicMock object.
 
-_ft = MagicMock()
-_ft.run = MagicMock()  # prevents ft.run(main) from starting the app
+_ft = sys.modules.get("flet") or MagicMock()
+_ft.run = MagicMock()
 sys.modules["flet"] = _ft
 
 import audio_loop  # noqa: E402 – must come after flet mock

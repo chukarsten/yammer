@@ -76,7 +76,7 @@ def main(page: ft.Page):
                 pass
             time.sleep(0.033)  # max ~30 fps
 
-    threading.Thread(target=_ui_update_thread, daemon=True).start()
+    threading.Thread(target=_ui_update_thread, daemon=True, name="yammer-ui-render").start()
 
     def _trigger_update():
         try:
